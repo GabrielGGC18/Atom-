@@ -20,6 +20,19 @@ from atom.core.types import Skill
 
 SKIP = {".git", ".obsidian", ".trash", "node_modules", "refs"}
 SKIP_FILES = {"readme.md", "index.md", "tasks.md", "changelog.md"}
+
+# Skills/agents ocultos: nao aparecem em `skill list` nem no roteamento.
+# Nomes (lowercase) resolvidos apos o frontmatter. Alternativa por arquivo:
+# `hidden: true` no frontmatter. Override em runtime: ATOM_SHOW_HIDDEN=1.
+HIDDEN = {
+    "portal-sei-django-drf",
+    "portal-sei-mentor",
+    "portal-sei-noticias",
+    "portal-sei-settings-env",
+    "portal-sei-templates-css",
+    "memory-portal-sei",
+    "senior-php-legado",
+}
 FM_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n", re.S)
 
 
@@ -77,10 +90,14 @@ def load_all(vault: str = "") -> tuple[Skill, ...]:
         return ()
     out: list[Skill] = []
     seen: set[str] = set()
+    show_hidden = os.environ.get("ATOM_SHOW_HIDDEN", "") not in ("", "0")
     for md in _iter_md(root):
         rel = md.relative_to(root)
         kind = _kind_for(rel)
         if kind == "doc":
+            continue
+        # assets/references dentro de uma pasta oculta tambem somem
+        if not show_hidden and any(p.lower() in HIDDEN for p in rel.parts):
             continue
         try:
             text = md.read_text(encoding="utf-8", errors="replace")
@@ -92,6 +109,8 @@ def load_all(vault: str = "") -> tuple[Skill, ...]:
         else:
             name = fm.get("name") or md.stem
         name = str(name).strip()
+        if not show_hidden and (name.lower() in HIDDEN or fm.get("hidden") is True):
+            continue
         if name.lower() in seen:
             continue
         seen.add(name.lower())
