@@ -126,24 +126,48 @@ def find(name: str) -> Skill | None:
     return None
 
 
-def route(query: str, limit: int = 2) -> list[Skill]:
-    """Escolhe skills provaveis pela query do Mestre (scoring simples)."""
+# Palavras comuns demais para indicar assunto. Sem isto, uma skill casa
+# por "responda"/"projeto" e entope o prompt com 6KB irrelevantes.
+STOPWORDS = {
+    "responda", "resposta", "pergunta", "quando", "usar", "sobre", "atom",
+    "mestre", "gabriel", "skill", "skills", "agent", "agents", "arquivo",
+    "arquivos", "projeto", "projetos", "codigo", "código", "sempre", "nunca",
+    "tambem", "também", "porque", "entao", "então", "assim", "melhor",
+    "fazer", "criar", "coisa", "coisas", "forma", "modo", "voce", "você",
+    "curto", "curta", "direto", "menos", "mais",
+}
+
+# Score minimo para injetar a skill. 3 = pelo menos um trigger real,
+# ou dominio + termo especifico. Match de palavra solta nao basta.
+MIN_SCORE = 3
+
+
+def score_skill(skill: Skill, query: str) -> int:
+    """Pontua relevancia da skill para a query. Maior = mais relevante."""
     q = query.lower()
-    scored: list[tuple[int, Skill]] = []
-    for s in load_all():
-        score = 0
-        for trig in set(s.triggers):
-            if trig and trig in q:
-                score += 3
-        for word in re.split(r"\W+", s.description.lower()):
-            if len(word) > 4 and word in q:
-                score += 1
-        if s.domain.split("/")[0] in q:
-            score += 2
-        if score:
-            scored.append((score, s))
-    scored.sort(key=lambda t: -t[0])
-    return [s for _, s in scored[:limit]]
+    score = 0
+    for trig in set(skill.triggers):
+        if trig and len(trig) > 2 and trig not in STOPWORDS and trig in q:
+            score += 3
+    for word in set(re.split(r"\W+", skill.description.lower())):
+        if len(word) > 4 and word not in STOPWORDS and word in q:
+            score += 1
+    domain = skill.domain.split("/")[0]
+    if domain != "geral" and domain in q:
+        score += 2
+    return score
+
+
+def route(query: str, limit: int = 2, min_score: int = MIN_SCORE) -> list[Skill]:
+    """Escolhe skills provaveis pela query do Mestre (scoring simples).
+
+    Abaixo de `min_score` nada e' carregado: melhor o ATOM responder sem
+    skill do que com a skill errada no contexto.
+    """
+    scored = [(score_skill(s, query), s) for s in load_all()]
+    hits = [(sc, s) for sc, s in scored if sc >= min_score]
+    hits.sort(key=lambda t: (-t[0], t[1].name))
+    return [s for _, s in hits[:limit]]
 
 
 def reload() -> None:

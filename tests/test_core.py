@@ -115,3 +115,22 @@ def test_default_vault_finds_dir_case_insensitive(monkeypatch, tmp_path):
     monkeypatch.setattr(paths, "_home", lambda: tmp_path)
     monkeypatch.setattr(paths, "atom_home", lambda: tmp_path / ".atom")
     assert paths.default_vault() == real
+
+
+def _skill(name, desc, triggers, domain="geral"):
+    from atom.core.types import Skill
+    return Skill(name=name, path="x.md", domain=domain, description=desc,
+                 triggers=triggers, body="corpo")
+
+
+def test_route_score_ignora_palavra_generica():
+    """Query sobre skills nao deve puxar skill so' por casar 'responda'."""
+    from atom.skills.loader import score_skill
+    s = _skill("ignorante", "Responda com tom ignorante, curto e direto.", ["ignorante"])
+    assert score_skill(s, "Quantas skills voce carregou? Responda em uma frase curta.") < 3
+
+
+def test_route_score_casa_trigger_real():
+    from atom.skills.loader import score_skill
+    s = _skill("docker-specialist", "Containers e compose", ["docker", "compose"], "sei")
+    assert score_skill(s, "erro no docker do SEI") >= 3
