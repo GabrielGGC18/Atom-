@@ -88,10 +88,30 @@ def test_file_tools_roundtrip():
 
 
 def test_skills_loader_on_vault():
+    from atom.core import paths
     from atom.skills import load_all
-    vault = Path(os.path.expanduser("~")) / "ATom-agent"
+    vault = paths.default_vault()
     if not vault.exists():
         pytest.skip("vault ausente")
     skills = load_all(str(vault))
     assert len(skills) > 5
     assert all(s.name and s.body for s in skills)
+
+
+def test_default_vault_respects_env(monkeypatch, tmp_path):
+    from atom.core import paths
+    alvo = tmp_path / "meu-vault"
+    alvo.mkdir()
+    monkeypatch.setenv("ATOM_VAULT", str(alvo))
+    assert paths.default_vault() == alvo
+
+
+def test_default_vault_finds_dir_case_insensitive(monkeypatch, tmp_path):
+    """Linux e' case-sensitive: achar a pasta mesmo com caixa diferente."""
+    from atom.core import paths
+    monkeypatch.delenv("ATOM_VAULT", raising=False)
+    real = tmp_path / "AtOm-AgEnT"
+    real.mkdir()
+    monkeypatch.setattr(paths, "_home", lambda: tmp_path)
+    monkeypatch.setattr(paths, "atom_home", lambda: tmp_path / ".atom")
+    assert paths.default_vault() == real

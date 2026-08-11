@@ -38,12 +38,39 @@ def logs_dir() -> Path:
     return d
 
 
+VAULT_CANDIDATES = ("Atom-Agent", "ATom-agent", "atom-agent", "ATOM-Agent", "vault")
+
+
 def default_vault() -> Path:
-    """Vault Obsidian com agents/skills do Mestre."""
+    """Vault Obsidian com agents/skills do Mestre.
+
+    Ordem: $ATOM_VAULT -> ~/.atom/vault -> nomes conhecidos em ~ ->
+    varredura case-insensitive em ~. Linux e' case-sensitive; nao da'
+    pra confiar num literal so'.
+    """
     override = os.environ.get("ATOM_VAULT")
     if override:
-        return Path(override)
-    return _home() / "ATom-agent"
+        return Path(override).expanduser()
+
+    local = atom_home() / "vault"
+    if local.is_dir():
+        return local
+
+    home = _home()
+    for name in VAULT_CANDIDATES:
+        cand = home / name
+        if cand.is_dir():
+            return cand
+
+    wanted = {n.lower() for n in VAULT_CANDIDATES}
+    try:
+        for entry in home.iterdir():
+            if entry.is_dir() and entry.name.lower() in wanted:
+                return entry
+    except OSError:
+        pass
+
+    return home / VAULT_CANDIDATES[0]
 
 
 def workspace() -> Path:
