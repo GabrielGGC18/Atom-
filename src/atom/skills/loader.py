@@ -83,14 +83,19 @@ def _iter_md(root: Path):
                 yield Path(dirpath, f)
 
 
-@lru_cache(maxsize=1)
 def load_all(vault: str = "") -> tuple[Skill, ...]:
+    # show_hidden entra na chave do cache: era lido dentro da funcao cacheada,
+    # entao mudar a env no mesmo processo nao surtia efeito.
+    return _load_all(vault, os.environ.get("ATOM_SHOW_HIDDEN", "") not in ("", "0"))
+
+
+@lru_cache(maxsize=4)
+def _load_all(vault: str, show_hidden: bool) -> tuple[Skill, ...]:
     root = Path(vault) if vault else paths.default_vault()
     if not root.exists():
         return ()
     out: list[Skill] = []
     seen: set[str] = set()
-    show_hidden = os.environ.get("ATOM_SHOW_HIDDEN", "") not in ("", "0")
     for md in _iter_md(root):
         rel = md.relative_to(root)
         kind = _kind_for(rel)
@@ -190,4 +195,4 @@ def route(query: str, limit: int = 2, min_score: int = MIN_SCORE) -> list[Skill]
 
 
 def reload() -> None:
-    load_all.cache_clear()
+    _load_all.cache_clear()

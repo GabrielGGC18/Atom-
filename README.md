@@ -39,9 +39,16 @@ atom mem list
 atom task add "revisar PR do portal" -p sei
 atom task list
 atom config set engine.provider ollama
+
+atom digest               # briefing: repos git, tarefas, memoria (custo zero)
+atom digest --llm         # + leitura em linguagem natural (gasta token)
+atom digest --save        # grava no Journal do vault
+atom daemon               # agendador de rotinas (Ctrl+C para parar)
+atom daemon --once        # roda o que estiver vencido e sai
+atom routines             # lista rotinas e ultima execucao
 ```
 
-No chat: `/sair` `/reset` `/tools` `/skills` `/mem`.
+No chat: `/clear` `/cost` `/model <nome>` `/tools` `/skills` `/mem` `/help` `/sair`.
 
 ## Engines
 
@@ -63,6 +70,7 @@ Forçar: `atom config set engine.provider ollama` + `atom config set engine.mode
 | arquivos | `read_file`, `write_file`, `list_dir`, `grep` |
 | web | `http_get`, `http_post` |
 | vault | `note_search`, `note_read`, `note_write`, `journal` |
+| skills | `skill_list`, `skill_read` (conteudo completo sob demanda) |
 | memória | `remember`, `recall`, `forget` |
 | tarefas | `task_add`, `task_list`, `task_done` |
 | sistema | `sysinfo`, `git_status`, `open_path` |
@@ -98,9 +106,34 @@ src/atom/
   cli/       main (typer), banner
 ```
 
+## Rotinas
+
+`routines.items` no config. Schedule: `10m`, `2h`, `daily@07:30`, `hourly@:15`.
+Acao: `digest`, `ask:<prompt>`, `shell:<comando>`.
+
+```yaml
+routines:
+  items:
+    - {name: briefing, schedule: "daily@08:00", action: digest, enabled: true}
+    - {name: disco, schedule: "6h", action: "shell:df -h /", enabled: true}
+```
+
+Ultima execucao fica no SQLite: reiniciar a maquina nao duplica nem perde a
+janela. Rotina que quebra e' registrada como `erro` e nao derruba o daemon.
+
+## Custo
+
+O `claude_cli` mantem UMA sessao por conversa (`--session-id` + `--resume`):
+so' o delta e' enviado a cada passo do ReAct, o resto fica no cache do
+servidor. Roda tambem com `--strict-mcp-config --setting-sources ""`, senao o
+CLI carrega o `CLAUDE.md` e as tools MCP do usuario em toda chamada (medido:
+~16k tokens de cache e ~76x no custo, tudo irrelevante para o ATOM).
+
+`atom ask --cost` e `/cost` no chat mostram tokens e custo.
+
 ## Roadmap
 
-- [ ] `atom digest` — briefing diário (agenda, git, tarefas)
-- [ ] `atom daemon` — agendador de rotinas
+- [x] `atom digest` — briefing diário (git, tarefas, memória)
+- [x] `atom daemon` — agendador de rotinas
 - [ ] voz (STT/TTS local)
 - [ ] MCP client

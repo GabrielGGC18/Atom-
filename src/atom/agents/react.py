@@ -4,30 +4,54 @@ from __future__ import annotations
 
 import json
 import re
+import time
 import uuid
+from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Callable
 
-from atom.agents.persona import build_system_prompt
+from atom.agents.persona import build_context_block, build_system_prompt, project_index
 from atom.core.config import Config
 from atom.core.registry import enabled_tools
 from atom.core.types import Message, ToolCall, ToolResult
 from atom.engine import Engine, EngineError, build as build_engine
+from atom.engine.base import EngineTransientError, Usage
 from atom.memory.store import get_store
 from atom.skills import route as route_skills
 
 TOOL_BLOCK = re.compile(r"```atom-tool\s*(.+?)```", re.S)
-JSON_FALLBACK = re.compile(r'\{\s*"tool"\s*:\s*".+?"\s*,\s*"args"\s*:\s*\{.*?\}\s*\}', re.S)
+# So' vale como fallback se a resposta INTEIRA for o JSON -- senao um exemplo
+# citado no meio da explicacao viraria execucao real.
+JSON_ONLY = re.compile(r'^\s*(\{\s*"tool"\s*:.*\})\s*$', re.S)
+
+# ~3.6 chars por token em pt-BR. Serve para orcamento, nao para cobranca.
+CHARS_PER_TOKEN = 3.6
 
 
-def parse_tool_call(text: str) -> ToolCall | None:
-    m = TOOL_BLOCK.search(text) or JSON_FALLBACK.search(text)
-    if not m:
-        return None
-    raw = m.group(1) if m.re is TOOL_BLOCK else m.group(0)
+def parse_tool_calls(text: str) -> list[ToolCall]:
+    """Todos os blocos de tool da resposta. Vazio = resposta final."""
+    out: list[ToolCall] = []
+    for raw in TOOL_BLOCK.findall(text):
+        call = _one(raw)
+        if call:
+            out.append(call)
+    if out:
+        return out
+    m = JSON_ONLY.match(text)
+    if m:
+        call = _one(m.group(1))
+        if call:
+            return [call]
+    return []
+
+
+def _one(raw: str) -> ToolCall | None:
     try:
         data = json.loads(raw.strip())
     except json.JSONDecodeError:
+        return None
+    if not isinstance(data, dict):
         return None
     name = data.get("tool")
     if not name:
@@ -38,11 +62,19 @@ def parse_tool_call(text: str) -> ToolCall | None:
     return ToolCall(tool=str(name), args=args, raw=raw.strip())
 
 
+def parse_tool_call(text: str) -> ToolCall | None:
+    """Compat: primeira chamada apenas."""
+    calls = parse_tool_calls(text)
+    return calls[0] if calls else None
+
+
 @dataclass
 class Turn:
     calls: list[ToolCall] = field(default_factory=list)
     results: list[ToolResult] = field(default_factory=list)
     answer: str = ""
+    steps: int = 0
+    usage: Usage = field(default_factory=Usage)
 
 
 class AtomAgent:
@@ -55,32 +87,62 @@ class AtomAgent:
         self.on_event = on_event or (lambda kind, payload: None)
         self.tools = enabled_tools(self.cfg.get("tools.enabled"))
         self.max_steps = int(self.cfg.get("agent.max_steps", 12))
+        self.retries = int(self.cfg.get("agent.retries", 2))
+        self.parallel = int(self.cfg.get("agent.parallel_tools", 4))
+        self.tool_limit = int(self.cfg.get("agent.tool_result_chars", 4000))
+        self.max_ctx = int(self.cfg.get("agent.max_context_chars", 60000))
+        self.skill_chars = int(self.cfg.get("agent.skill_max_chars", 2500))
+        self._projects = self._project_index()
         self.history: list[Message] = []
         self.store = get_store()
+        self._system = build_system_prompt(
+            self.tools, caveman=bool(self.cfg.get("agent.caveman", False)))
+
+    def _project_index(self) -> str:
+        if not self.cfg.get("agent.project_index", True):
+            return ""
+        raw = self.cfg.get("digest.repo_roots") or []
+        roots = ([Path(r).expanduser() for r in raw] if raw
+                 else [Path.home() / "projects", Path.home() / "gabriel-projects"])
+        return project_index(roots)
 
     # --- contexto ---
     def _memories(self, query: str) -> list[str]:
         if not self.cfg.get("memory.enabled", True):
             return []
         rows = self.store.recall(query, int(self.cfg.get("memory.max_recall", 8)))
-        if not rows:
-            rows = self.store.recall("", 5)
+        # Sem casamento => nao injeta nada. Fato aleatorio no prompt e' ruido
+        # que o modelo tenta usar.
         return [f"{r['key']}: {r['value']}" for r in rows]
 
-    def _system(self, query: str) -> Message:
-        skills = route_skills(query)
-        self.on_event("skills", ", ".join(s.name for s in skills) or "nenhuma")
-        prompt = build_system_prompt(
-            self.tools, skills, self._memories(query),
-            caveman=bool(self.cfg.get("agent.caveman", False)),
-        )
-        return Message(role="system", content=prompt)
+    def _trim(self, messages: list[Message]) -> list[Message]:
+        """Corta do meio pra caber no orcamento, preservando system e o fim."""
+        budget = self.max_ctx
+        total = sum(len(m.content) for m in messages)
+        if total <= budget:
+            return messages
+        head = [m for m in messages if m.role == "system"]
+        tail = [m for m in messages if m.role != "system"]
+        size = sum(len(m.content) for m in head)
+        keep: list[Message] = []
+        for m in reversed(tail):
+            if size + len(m.content) > budget and keep:
+                break
+            size += len(m.content)
+            keep.append(m)
+        keep.reverse()
+        dropped = len(tail) - len(keep)
+        if dropped > 0:
+            self.on_event("trim", f"{dropped} mensagens antigas cortadas do contexto")
+        return head + keep
 
     # --- execucao de tool ---
     def run_tool(self, call: ToolCall) -> ToolResult:
         tool = self.tools.get(call.tool)
         if not tool:
-            return ToolResult(call.tool, False, "", f"tool '{call.tool}' nao existe ou desativada")
+            known = ", ".join(sorted(self.tools)[:20])
+            return ToolResult(call.tool, False, "",
+                              f"tool '{call.tool}' nao existe ou esta desativada. Disponiveis: {known}")
         try:
             out = tool.handler(**call.args)
         except TypeError as exc:
@@ -89,39 +151,97 @@ class AtomAgent:
             return ToolResult(call.tool, False, "", f"{type(exc).__name__}: {exc}")
         return ToolResult(call.tool, True, str(out))
 
+    def run_tools(self, calls: list[ToolCall]) -> list[ToolResult]:
+        if len(calls) == 1:
+            return [self.run_tool(calls[0])]
+        workers = max(1, min(self.parallel, len(calls)))
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            return list(pool.map(self.run_tool, calls))
+
+    # --- engine com retry ---
+    def _complete(self, messages: list[Message]) -> str:
+        last: Exception | None = None
+        for attempt in range(self.retries + 1):
+            try:
+                return self.engine.complete(self._trim(messages))
+            except EngineTransientError as exc:
+                last = exc
+                if attempt < self.retries:
+                    wait = 2 ** attempt
+                    self.on_event("retry", f"falha temporaria ({exc}); retry em {wait}s")
+                    time.sleep(wait)
+            except EngineError:
+                raise
+        raise EngineError(f"falhou apos {self.retries + 1} tentativas: {last}")
+
     # --- loop principal ---
     def run(self, user_input: str) -> Turn:
         turn = Turn()
+        before = Usage(**vars(self.engine.usage))
         self.store.log_turn(self.session_id, "user", user_input)
-        messages: list[Message] = [self._system(user_input), *self.history,
-                                   Message("user", user_input)]
+
+        skills = route_skills(user_input)
+        self.on_event("skills", ", ".join(s.name for s in skills) or "nenhuma")
+        ctx = build_context_block(skills, self._memories(user_input), self.skill_chars,
+                                  self._projects)
+        first = f"{ctx}\n\n---\n\n{user_input}" if ctx else user_input
+
+        messages: list[Message] = [Message("system", self._system), *self.history,
+                                   Message("user", first)]
 
         for step in range(self.max_steps):
+            turn.steps = step + 1
             try:
-                reply = self.engine.complete(messages)
+                reply = self._complete(messages)
             except EngineError as exc:
                 turn.answer = f"ERRO de engine: {exc}"
+                self._finish(user_input, turn, before)
                 return turn
-            call = parse_tool_call(reply)
-            if not call:
+
+            calls = parse_tool_calls(reply)
+            if not calls:
                 turn.answer = reply.strip()
                 break
-            self.on_event("tool_call", f"{call.tool} {json.dumps(call.args, ensure_ascii=False)[:160]}")
-            result = self.run_tool(call)
-            self.on_event("tool_result", result.render(500))
-            turn.calls.append(call)
-            turn.results.append(result)
-            messages.append(Message("assistant", reply))
-            messages.append(Message("tool", result.render(), name=call.tool))
-        else:
-            turn.answer = f"(limite de {self.max_steps} passos atingido sem resposta final)"
 
+            for c in calls:
+                self.on_event("tool_call", f"{c.tool} {json.dumps(c.args, ensure_ascii=False)[:160]}")
+            results = self.run_tools(calls)
+            messages.append(Message("assistant", reply))
+            for c, r in zip(calls, results):
+                self.on_event("tool_result", r.render(300))
+                turn.calls.append(c)
+                turn.results.append(r)
+                messages.append(Message("tool", r.render(self.tool_limit), name=c.tool))
+        else:
+            # Limite estourado: em vez de jogar fora o trabalho, pede o fechamento.
+            self.on_event("retry", f"limite de {self.max_steps} passos; pedindo resposta final")
+            messages.append(Message(
+                "user",
+                "Limite de passos atingido. Sem mais tools. Responda agora, em texto "
+                "normal, com o que ja' foi apurado e diga explicitamente o que ficou em aberto."))
+            try:
+                turn.answer = self._complete(messages).strip()
+            except EngineError as exc:
+                turn.answer = f"(limite de {self.max_steps} passos atingido; engine falhou: {exc})"
+
+        self._finish(user_input, turn, before)
+        return turn
+
+    def _finish(self, user_input: str, turn: Turn, before: Usage) -> None:
+        now = self.engine.usage
+        turn.usage = Usage(
+            input_tokens=now.input_tokens - before.input_tokens,
+            output_tokens=now.output_tokens - before.output_tokens,
+            cache_read=now.cache_read - before.cache_read,
+            cache_write=now.cache_write - before.cache_write,
+            cost_usd=round(now.cost_usd - before.cost_usd, 6),
+        )
         self.history.append(Message("user", user_input))
         self.history.append(Message("assistant", turn.answer))
         self.history = self.history[-20:]
         self.store.log_turn(self.session_id, "assistant", turn.answer)
-        return turn
 
     def reset(self) -> None:
         self.history.clear()
         self.session_id = uuid.uuid4().hex[:12]
+        self.engine.new_session()

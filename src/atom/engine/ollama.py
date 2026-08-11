@@ -7,7 +7,7 @@ import urllib.error
 import urllib.request
 
 from atom.core.types import Message
-from atom.engine.base import Engine, EngineError
+from atom.engine.base import Engine, EngineError, EngineTransientError, Usage
 
 DEFAULT_URL = "http://localhost:11434"
 DEFAULT_MODEL = "qwen2.5:7b-instruct"
@@ -51,6 +51,16 @@ class OllamaEngine(Engine):
         try:
             with urllib.request.urlopen(req, timeout=self.timeout) as r:
                 data = json.loads(r.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            if exc.code == 404:
+                raise EngineError(
+                    f"ollama: modelo '{model}' nao existe. `ollama list` mostra os instalados."
+                ) from exc
+            raise EngineTransientError(f"ollama HTTP {exc.code}") from exc
         except urllib.error.URLError as exc:
-            raise EngineError(f"ollama indisponivel: {exc}") from exc
+            raise EngineTransientError(f"ollama indisponivel: {exc}") from exc
+        self._account(Usage(
+            input_tokens=int(data.get("prompt_eval_count") or 0),
+            output_tokens=int(data.get("eval_count") or 0),
+        ))
         return (data.get("message") or {}).get("content", "").strip()

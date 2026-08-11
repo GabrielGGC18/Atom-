@@ -23,15 +23,24 @@ DEFAULTS: dict[str, Any] = {
         "max_steps": 12,
         "persona": "atom",
         "language": "pt-BR",
-        "caveman": False,
+        "caveman": True,           # respostas curtas = menos token de saida
+        "retries": 2,              # retry com backoff em falha temporaria
+        "parallel_tools": 4,       # tools independentes em paralelo
+        "tool_result_chars": 4000, # corte do resultado de tool no contexto
+        "max_context_chars": 60000,# orcamento total antes de podar historico
+        "skill_max_chars": 2500,   # resto da skill via tool skill_read
+        "project_index": True,     # lista os projetos do Mestre no contexto
     },
     "tools": {
         "enabled": ["shell", "read_file", "write_file", "list_dir", "grep",
                      "http_get", "note_search", "note_read", "note_write",
                      "task_add", "task_list", "task_done", "sysinfo",
-                     "remember", "recall"],
+                     "remember", "recall", "skill_list", "skill_read"],
         "shell_allow_dangerous": False,
         "workspace_guard": True,
+        # Raizes onde write_file pode escrever. Vazio = cwd + ~/projects +
+        # ~/gabriel-projects + ~/.atom. Leitura nao e' restrita por aqui.
+        "write_roots": [],
     },
     "vault": {
         "path": "",                  # vazio = ~/ATom-agent
@@ -42,6 +51,18 @@ DEFAULTS: dict[str, Any] = {
     "memory": {
         "enabled": True,
         "max_recall": 8,
+    },
+    "digest": {
+        # Vazio = ~/projects + ~/gabriel-projects
+        "repo_roots": [],
+    },
+    "routines": {
+        # schedule: 10m | 2h | daily@07:30 | hourly@:15
+        # action:   digest | ask:<prompt> | shell:<comando>
+        "items": [
+            {"name": "briefing", "schedule": "daily@08:00",
+             "action": "digest", "enabled": False},
+        ],
     },
 }
 
@@ -102,6 +123,7 @@ class Config:
             "ATOM_MODEL": "engine.model",
             "ATOM_BASE_URL": "engine.base_url",
             "ATOM_MAX_STEPS": "agent.max_steps",
+            "ATOM_TIMEOUT": "engine.timeout",
         }
         for env, dotted in env_map.items():
             val = os.environ.get(env)

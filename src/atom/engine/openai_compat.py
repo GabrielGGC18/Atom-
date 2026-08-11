@@ -8,7 +8,7 @@ import urllib.error
 import urllib.request
 
 from atom.core.types import Message
-from atom.engine.base import Engine, EngineError
+from atom.engine.base import Engine, EngineError, EngineTransientError, Usage
 
 DEFAULT_URL = "https://api.openai.com/v1"
 
@@ -47,7 +47,15 @@ class OpenAICompatEngine(Engine):
             with urllib.request.urlopen(req, timeout=self.timeout) as r:
                 data = json.loads(r.read().decode("utf-8"))
         except urllib.error.HTTPError as exc:
-            raise EngineError(f"HTTP {exc.code}: {exc.read()[:300]!r}") from exc
+            body = exc.read()[:300]
+            if exc.code in (408, 409, 429, 500, 502, 503, 504):
+                raise EngineTransientError(f"HTTP {exc.code}: {body!r}") from exc
+            raise EngineError(f"HTTP {exc.code}: {body!r}") from exc
         except urllib.error.URLError as exc:
-            raise EngineError(f"conexao falhou: {exc}") from exc
+            raise EngineTransientError(f"conexao falhou: {exc}") from exc
+        u = data.get("usage") or {}
+        self._account(Usage(
+            input_tokens=int(u.get("prompt_tokens") or 0),
+            output_tokens=int(u.get("completion_tokens") or 0),
+        ))
         return data["choices"][0]["message"]["content"].strip()

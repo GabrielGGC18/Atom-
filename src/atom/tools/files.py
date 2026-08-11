@@ -7,6 +7,7 @@ import os
 import re
 from pathlib import Path
 
+from atom.core.guard import check_read, check_write
 from atom.core.registry import register
 
 MAX_READ = 200_000
@@ -17,6 +18,9 @@ SKIP_DIRS = {".git", "node_modules", "__pycache__", ".venv", "venv", "dist",
 @register("read_file", "Le arquivo de texto (opcional faixa de linhas).",
           {"path": "str", "start": "int (opcional)", "end": "int (opcional)"})
 def read_file(path: str, start: int = 0, end: int = 0) -> str:
+    blocked = check_read(path)
+    if blocked:
+        return blocked
     p = Path(path).expanduser()
     if not p.exists():
         return f"ERRO: nao existe {p}"
@@ -35,6 +39,9 @@ def read_file(path: str, start: int = 0, end: int = 0) -> str:
 @register("write_file", "Escreve/sobrescreve arquivo de texto. Cria diretorios.",
           {"path": "str", "content": "str", "append": "bool (opcional)"}, dangerous=True)
 def write_file(path: str, content: str, append: bool = False) -> str:
+    blocked = check_write(path)
+    if blocked:
+        return blocked
     p = Path(path).expanduser()
     p.parent.mkdir(parents=True, exist_ok=True)
     mode = "a" if append else "w"

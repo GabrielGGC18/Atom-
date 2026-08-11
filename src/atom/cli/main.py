@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+from datetime import datetime
 from pathlib import Path
 
 import typer
@@ -53,19 +54,56 @@ def _agent(verbose: bool = True) -> AtomAgent:
             console.print(f"[dim]{payload.splitlines()[0][:160] if payload else ''}[/]")
         elif kind == "skills" and payload != "nenhuma":
             console.print(f"[magenta]skills: {payload}[/]")
+        elif kind in ("retry", "trim"):
+            console.print(f"[dim yellow]{payload}[/]")
 
     return AtomAgent(cfg=cfg, on_event=on_event)
+
+
+def _run(agent: AtomAgent, text: str):
+    """Roda o turno com spinner.
+
+    Sem isto o terminal fica identico a travado enquanto o modelo pensa:
+    `engine.complete` bloqueia e nada e' impresso ate a resposta inteira chegar.
+    """
+    with console.status("[dim]ATOM pensando...[/]", spinner="dots"):
+        return agent.run(text)
+
+
+def _fmt_usage(u) -> str:
+    if not u.total_tokens and not u.cost_usd:
+        return "[dim](backend nao reporta uso)[/]"
+    cost = f"  ~US$ {u.cost_usd:.4f}" if u.cost_usd else ""
+    return (f"[dim]in {u.input_tokens}  out {u.output_tokens}  "
+            f"cache r/w {u.cache_read}/{u.cache_write}{cost}[/]")
+
+
+HELP = """[bold]comandos do chat[/]
+  /clear /reset   limpa o contexto (e a sessao do backend)
+  /cost           tokens e custo do turno e da sessao
+  /model <nome>   troca de modelo (ex: /model opus, /model sonnet)
+  /tools          lista ferramentas
+  /skills         lista skills do vault
+  /mem            lista memoria
+  /help           esta ajuda
+  /sair           encerra"""
 
 
 # ---------------- comandos ----------------
 
 @app.command()
 def ask(pergunta: list[str] = typer.Argument(..., help="Pergunta ou ordem"),
-        quiet: bool = typer.Option(False, "--quiet", "-q", help="Sem log de tools")) -> None:
+        quiet: bool = typer.Option(False, "--quiet", "-q", help="Sem log de tools"),
+        cost: bool = typer.Option(False, "--cost", help="Mostra tokens/custo no fim"),
+        model: str = typer.Option("", "--model", "-m", help="Modelo (ex: opus, sonnet)")) -> None:
     """Uma pergunta, uma resposta (com uso de ferramentas)."""
     agent = _agent(verbose=not quiet)
-    turn = agent.run(" ".join(pergunta))
+    if model:
+        agent.engine.model = model
+    turn = agent.run(" ".join(pergunta)) if quiet else _run(agent, " ".join(pergunta))
     console.print(Markdown(turn.answer or "(vazio)"))
+    if cost:
+        console.print(_fmt_usage(turn.usage))
 
 
 @app.command()
@@ -73,7 +111,7 @@ def chat() -> None:
     """Sessao interativa com o ATOM."""
     agent = _agent()
     banner.show(console, agent.engine.describe(), len(agent.tools), len(load_skills()))
-    console.print("[dim]comandos: /sair /reset /tools /skills /mem[/]\n")
+    console.print("[dim]comandos: /clear /cost /model /tools /skills /mem /help /sair[/]\n")
     while True:
         try:
             user = console.input("[bold green]Mestre>[/] ").strip()
@@ -86,9 +124,25 @@ def chat() -> None:
         if low in ("/sair", "/exit", "/quit", "sair"):
             console.print("[cyan]ATOM off, Mestre.[/]")
             return
-        if low == "/reset":
+        if low in ("/reset", "/clear", "/limpar"):
             agent.reset()
-            console.print("[dim]contexto limpo[/]")
+            console.print("[dim]contexto limpo (sessao nova no backend)[/]")
+            continue
+        if low in ("/help", "/ajuda", "/?"):
+            console.print(HELP)
+            continue
+        if low == "/cost":
+            console.print("sessao: " + _fmt_usage(agent.engine.usage))
+            continue
+        if low.startswith("/model"):
+            parts = user.split(maxsplit=1)
+            if len(parts) == 1:
+                console.print(f"modelo atual: [cyan]{agent.engine.describe()}[/]")
+            else:
+                agent.engine.model = parts[1].strip()
+                agent.engine.new_session()
+                console.print(f"[green]modelo -> {agent.engine.describe()}[/] "
+                              "[dim](contexto reiniciado)[/]")
             continue
         if low == "/tools":
             tools()
@@ -99,9 +153,14 @@ def chat() -> None:
         if low == "/mem":
             mem_list("")
             continue
-        turn = agent.run(user)
+        try:
+            turn = _run(agent, user)
+        except KeyboardInterrupt:
+            console.print("[yellow]turno cancelado[/]")
+            continue
         console.print(f"\n[bold cyan]ATOM>[/]")
         console.print(Markdown(turn.answer or "(vazio)"))
+        console.print(_fmt_usage(turn.usage))
         console.print()
 
 
@@ -230,6 +289,79 @@ def task_done(task_id: int) -> None:
     """Conclui tarefa."""
     ok = get_store().task_done(task_id)
     console.print(f"[green]task #{task_id} concluida[/]" if ok else "[red]nao encontrada[/]")
+
+
+@app.command()
+def digest(llm: bool = typer.Option(False, "--llm", help="Resumo em linguagem natural (gasta token)"),
+           all_repos: bool = typer.Option(False, "--all", help="Inclui repos limpos"),
+           save: bool = typer.Option(False, "--save", help="Grava no journal do vault")) -> None:
+    """Briefing do dia: repos, tarefas, memoria."""
+    from atom.routines.digest import LLM_PROMPT, collect, to_text
+    cfg = Config.load()
+    with console.status("[dim]varrendo repos...[/]", spinner="dots"):
+        d = collect(cfg)
+    text = to_text(d, only_interesting=not all_repos)
+    console.print(Markdown(text))
+
+    if llm:
+        agent = _agent(verbose=False)
+        turn = _run(agent, LLM_PROMPT + text)
+        console.print("\n[bold cyan]Leitura do ATOM>[/]")
+        console.print(Markdown(turn.answer or "(vazio)"))
+        console.print(_fmt_usage(turn.usage))
+        text += "\n\n## Leitura do ATOM\n\n" + turn.answer
+
+    if save:
+        from atom.tools.vault import journal
+        console.print(f"[green]{journal(text)}[/]")
+
+
+@app.command()
+def daemon(once: bool = typer.Option(False, "--once", help="Roda o que estiver vencido e sai"),
+           force: bool = typer.Option(False, "--force", help="Roda tudo, vencido ou nao"),
+           tick: int = typer.Option(20, "--tick", help="Segundos entre verificacoes")) -> None:
+    """Agendador de rotinas (ver `routines.items` no config)."""
+    from atom.routines.daemon import load_routines, run_due, serve
+
+    def on_event(kind: str, payload: str) -> None:
+        color = {"start": "dim", "done": "green", "fail": "red", "boot": "cyan"}.get(kind, "dim")
+        console.print(f"[{color}]{datetime.now():%H:%M:%S} {kind}: {payload}[/]")
+
+    cfg = Config.load()
+    routines = load_routines(cfg)
+    if not routines:
+        console.print("[yellow]nenhuma rotina em routines.items do config[/]")
+        raise typer.Exit(1)
+
+    if once or force:
+        ran = run_due(cfg, force=force, on_event=on_event)
+        console.print(f"[green]{len(ran)} rotina(s) executada(s)[/]" if ran
+                      else "[dim]nada vencido[/]")
+        return
+    console.print("[dim]Ctrl+C para parar[/]")
+    try:
+        serve(cfg, tick=tick, on_event=on_event)
+    except KeyboardInterrupt:
+        console.print("\n[cyan]daemon parado[/]")
+
+
+@app.command("routines")
+def routines_cmd() -> None:
+    """Lista rotinas e ultima execucao."""
+    from atom.routines.daemon import load_routines
+    rows = load_routines(Config.load())
+    if not rows:
+        console.print("[dim](nenhuma rotina configurada)[/]")
+        return
+    store = get_store()
+    t = Table("rotina", "schedule", "acao", "ativa", "ultima", "status")
+    for r in rows:
+        last = store.routine_last(r.name)
+        t.add_row(r.name, r.schedule, r.action[:40],
+                  "sim" if r.enabled else "nao",
+                  (last or {}).get("started_at", "-"),
+                  (last or {}).get("status", "-"))
+    console.print(t)
 
 
 @cfg_app.command("show")
