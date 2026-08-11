@@ -10,10 +10,11 @@ _TOOLS: dict[str, Tool] = {}
 
 
 def register(name: str, description: str, schema: dict[str, str],
-             dangerous: bool = False) -> Callable:
+             dangerous: bool = False,
+             risk: Callable[[dict], bool] | None = None) -> Callable:
     def deco(fn: Callable[..., str]) -> Callable[..., str]:
         _TOOLS[name] = Tool(name=name, description=description, schema=schema,
-                            handler=fn, dangerous=dangerous)
+                            handler=fn, dangerous=dangerous, risk=risk)
         return fn
     return deco
 

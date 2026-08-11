@@ -50,6 +50,15 @@ class Tool:
     schema: dict[str, str]
     handler: Callable[..., str]
     dangerous: bool = False
+    # Avalia risco por chamada. `shell` usa isto para nao pedir confirmacao
+    # em comando de leitura (`git log`, `ls`): perguntar para tudo treina o
+    # Mestre a aprovar no automatico, que e' pior que nao perguntar.
+    risk: Callable[[dict], bool] | None = None
+
+    def risky(self, args: dict) -> bool:
+        if not self.dangerous:
+            return False
+        return self.risk(args) if self.risk else True
 
     def spec(self) -> str:
         args = ", ".join(f"{k}: {v}" for k, v in self.schema.items())

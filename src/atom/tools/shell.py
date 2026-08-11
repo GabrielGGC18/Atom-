@@ -15,6 +15,7 @@ import os
 import re
 import shutil
 import subprocess
+from pathlib import Path
 
 from atom.core.config import Config
 from atom.core.registry import register
@@ -64,6 +65,56 @@ def is_dangerous(cmd: str) -> str | None:
     return None
 
 
+# Comandos que so' leem. Confirmar `ls` e `git log` treina o Mestre a aprovar
+# no automatico -- e ai' a confirmacao que importa passa batido tambem.
+READONLY = {
+    "ls", "cat", "head", "tail", "wc", "file", "stat", "du", "df", "pwd",
+    "echo", "which", "whoami", "date", "uname", "env", "printenv", "id",
+    "grep", "rg", "find", "fd", "tree", "diff", "sort", "uniq", "cut", "awk",
+    "sed", "jq", "ps", "top", "free", "uptime", "hostname", "curl", "wget",
+}
+# Subcomando de leitura de ferramentas que tambem escrevem.
+READONLY_SUB = {
+    "git": {"log", "status", "diff", "show", "branch", "remote", "config",
+            "rev-parse", "rev-list", "describe", "blame", "ls-files", "tag",
+            "shortlog", "whatchanged", "cat-file", "count-objects"},
+    "docker": {"ps", "images", "logs", "inspect", "version", "info", "stats"},
+    "kubectl": {"get", "describe", "logs", "version", "explain"},
+    "npm": {"list", "ls", "view", "outdated", "audit"},
+    "pip": {"list", "show", "freeze"},
+    "poetry": {"show", "check"},
+    "uv": {"pip"},
+}
+
+
+def is_readonly(cmd: str) -> bool:
+    """Comando que so' le'? Conservador: na duvida, retorna False."""
+    s = cmd.strip()
+    if not s or is_dangerous(s):
+        return False
+    # Redirecionamento escreve; substituicao de comando esconde o alvo real.
+    if re.search(r"(?<![0-9])>|>>|\$\(|`|\bsudo\b|\btee\b|\bxargs\b", s):
+        return False
+    for part in re.split(r"\|\||&&|\||;", s):
+        toks = part.strip().split()
+        if not toks:
+            continue
+        base = Path(toks[0]).name
+        if base in READONLY:
+            continue
+        subs = READONLY_SUB.get(base)
+        if subs:
+            args = [a for a in toks[1:] if not a.startswith("-")]
+            if args and args[0] in subs:
+                continue
+        return False
+    return True
+
+
+def _shell_needs_confirm(args: dict) -> bool:
+    return not is_readonly(str(args.get("command", "")))
+
+
 def _shell_exe() -> list[str]:
     if os.name == "nt":
         bash = shutil.which("bash")
@@ -78,6 +129,7 @@ def _shell_exe() -> list[str]:
     "Roda comando no shell e devolve stdout+stderr. Use para git, ls, npm, python, etc.",
     {"command": "str", "cwd": "str (opcional)", "timeout": "int seg (opcional, default 120)"},
     dangerous=True,
+    risk=_shell_needs_confirm,
 )
 def shell(command: str, cwd: str = "", timeout: int = 120) -> str:
     allowed = (os.environ.get("ATOM_ALLOW_DANGEROUS") == "1"

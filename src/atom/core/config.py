@@ -38,6 +38,10 @@ DEFAULTS: dict[str, Any] = {
                      "remember", "recall", "skill_list", "skill_read"],
         "shell_allow_dangerous": False,
         "workspace_guard": True,
+        # Mascara segredo em arquivo .env/.pem e em qualquer saida de tool.
+        "mask_secrets": True,
+        # Pede confirmacao no chat antes de tool que altera o sistema.
+        "confirm_dangerous": True,
         # Raizes onde write_file pode escrever. Vazio = cwd + ~/projects +
         # ~/gabriel-projects + ~/.atom. Leitura nao e' restrita por aqui.
         "write_roots": [],

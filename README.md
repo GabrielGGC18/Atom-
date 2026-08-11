@@ -78,6 +78,22 @@ Forçar: `atom config set engine.provider ollama` + `atom config set engine.mode
 Comandos destrutivos (`rm -rf`, `git reset --hard`, `git push --force`, `drop table`, …)
 são **bloqueados** salvo `ATOM_ALLOW_DANGEROUS=1`.
 
+## Dados sensíveis
+
+Três camadas, todas em `tools` no config:
+
+| Chave | Faz |
+|---|---|
+| `mask_secrets` | `.env`, `.pem`, `credentials` são lidos com os **valores** mascarados — o agent vê quais variáveis existem, não o conteúdo. Vale para **toda** saída de tool, então `shell: cat .env` também sai redigido. `grep` pula esses arquivos. |
+| `confirm_dangerous` | No chat, tool que altera o sistema pede `s/N` antes de rodar. Comando de leitura (`git log`, `ls`, `docker ps`) não pergunta — confirmar tudo treina a aprovar no automático. |
+| `workspace_guard` | Escrita só nas raízes de `write_roots`. Chave privada (`id_rsa`, `~/.ssh`) não é lida. |
+
+Código não é confundido com segredo: `SECRET_KEY = os.getenv("SECRET_KEY")` e
+`senha: str = Field(...)` passam intactos; `SECRET_KEY=k9dJ2mQp7xVn` não.
+
+Rede contra acidente, não contra adversário: comando deliberadamente ofuscado
+ainda passa.
+
 ## Skills
 
 Lidas direto do vault Obsidian (`~/ATom-agent`, override por `ATOM_VAULT`):

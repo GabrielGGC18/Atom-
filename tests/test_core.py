@@ -7,6 +7,27 @@ from pathlib import Path
 import pytest
 
 import atom.tools  # noqa: F401  popula registry
+from atom.engine.base import Usage
+
+
+class _FakeEngine:
+    """Engine mudo: os testes de tool nao devem falar com backend nenhum."""
+    name = "fake"
+    stateful = False
+    model = ""
+
+    def __init__(self):
+        self.usage = Usage()
+        self.last_usage = Usage()
+
+    def complete(self, messages):
+        return "ok"
+
+    def new_session(self):
+        pass
+
+    def describe(self):
+        return "fake"
 from atom.agents.react import parse_tool_call
 from atom.core.config import Config
 from atom.core.registry import all_tools
@@ -320,3 +341,107 @@ def test_domain_comes_from_config(tmp_path):
     (d / "s.md").write_text("# S\n\n## Quando usar\nx\n")
     assert _load_all(str(tmp_path / "v"), False, frozenset(), ("infra",))[0].domain == "infra"
     assert _load_all(str(tmp_path / "v"), False, frozenset(), ())[0].domain == "geral"
+
+
+# ---------------- segredos ----------------
+
+@pytest.mark.parametrize("txt", [
+    "SECRET_KEY=k9dJ2mQp7xVn4Lw",
+    "DATABASE_URL=postgres://u:senha123@h/db",
+    "AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG",
+    "ghp_abcdefghijklmnopqrstuvwxyz12",
+    'API_KEY: "sk-proj-aBcD1234efGH5678"',
+])
+def test_redact_masks_secrets(txt):
+    from atom.core.guard import redact
+    assert "REDIGIDO" in redact(txt)
+
+
+@pytest.mark.parametrize("txt", [
+    'SECRET_KEY = os.getenv("SECRET_KEY")',   # codigo, nao segredo
+    "SECRET_KEY: str = Field(...)",           # anotacao de tipo
+    'password = request.form["pw"]',          # indexacao
+    "access_token: Optional[str] = None",
+    "SECRET_KEY=$SECRET_KEY",                 # placeholder
+    "API_KEY=your_key_here",
+    "self.token = token",
+    'ALGORITHM = "HS256"',
+])
+def test_redact_preserves_code(txt):
+    """Mascarar fonte cegaria o agent no caso mais comum: ler codigo."""
+    from atom.core.guard import redact
+    assert "REDIGIDO" not in redact(txt), txt
+
+
+def test_env_file_read_is_masked(tmp_path):
+    from atom.tools.files import read_file
+    env = tmp_path / ".env"
+    env.write_text("SECRET_KEY=k9dJ2mQp7xVn4Lw\nPORT=8000\n")
+    out = read_file(str(env))
+    assert "k9dJ2mQp7xVn4Lw" not in out
+    assert "PORT=8000" in out   # nao-segredo continua util
+
+
+def test_shell_output_is_redacted(tmp_path):
+    """`cat .env` via shell contornava a protecao do read_file."""
+    from atom.agents.react import AtomAgent
+    from atom.core.types import ToolCall
+    env = tmp_path / ".env"
+    env.write_text("SECRET_KEY=k9dJ2mQp7xVn4Lw\n")
+    agent = AtomAgent(cfg=Config.load(), engine=_FakeEngine())
+    out = agent.run_tool(ToolCall("shell", {"command": f"cat {env}"})).output
+    assert "k9dJ2mQp7xVn4Lw" not in out
+
+
+def test_grep_skips_secret_files(tmp_path):
+    from atom.tools.files import grep
+    (tmp_path / ".env").write_text("SECRET_KEY=k9dJ2mQp7xVn4Lw\n")
+    assert "k9dJ2mQp7xVn4Lw" not in grep("SECRET_KEY", str(tmp_path))
+
+
+def test_dangerous_tool_needs_confirmation(tmp_path):
+    from atom.agents.react import AtomAgent
+    from atom.core.types import ToolCall
+    alvo = tmp_path / "novo.txt"
+    negado = AtomAgent(cfg=Config.load(), engine=_FakeEngine(), on_confirm=lambda c: False)
+    r = negado.run_tool(ToolCall("write_file", {"path": str(alvo), "content": "x"}))
+    assert not r.ok and not alvo.exists()
+
+    ok = AtomAgent(cfg=Config.load(), engine=_FakeEngine(), on_confirm=lambda c: True)
+    assert ok.run_tool(ToolCall("write_file", {"path": str(alvo), "content": "x"})).ok
+    assert alvo.exists()
+
+
+def test_safe_tool_skips_confirmation(tmp_path):
+    from atom.agents.react import AtomAgent
+    from atom.core.types import ToolCall
+    f = tmp_path / "a.txt"
+    f.write_text("conteudo")
+    chamadas = []
+    agent = AtomAgent(cfg=Config.load(), engine=_FakeEngine(),
+                      on_confirm=lambda c: chamadas.append(c) or True)
+    assert agent.run_tool(ToolCall("read_file", {"path": str(f)})).output == "conteudo"
+    assert chamadas == []
+
+
+@pytest.mark.parametrize("cmd", ["git log -3", "ls -la", "git status", "cat main.py",
+                                  "docker ps", "pip list", "grep -r foo ."])
+def test_readonly_shell_skips_confirmation(cmd):
+    from atom.tools.shell import is_readonly
+    assert is_readonly(cmd), cmd
+
+
+@pytest.mark.parametrize("cmd", ["git commit -m x", "git push", "rm arquivo.txt",
+                                  "pip install requests", "echo x > arquivo",
+                                  "cat $(ls)", "sudo ls", "ls && rm -rf /tmp/x",
+                                  "python script.py"])
+def test_mutating_shell_needs_confirmation(cmd):
+    from atom.tools.shell import is_readonly
+    assert not is_readonly(cmd), cmd
+
+
+def test_shell_risk_wired_to_tool():
+    from atom.core.registry import get
+    tool = get("shell")
+    assert tool.risky({"command": "rm x"}) is True
+    assert tool.risky({"command": "git status"}) is False

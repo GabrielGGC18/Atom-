@@ -7,7 +7,8 @@ import os
 import re
 from pathlib import Path
 
-from atom.core.guard import check_read, check_write
+from atom.core.guard import (check_read, check_write, is_secret_file,
+                             masking_enabled, redact)
 from atom.core.registry import register
 
 MAX_READ = 200_000
@@ -33,6 +34,12 @@ def read_file(path: str, start: int = 0, end: int = 0) -> str:
     if start or end:
         lines = text.splitlines()
         text = "\n".join(lines[max(0, start - 1): end or len(lines)])
+    if masking_enabled():
+        if is_secret_file(p):
+            # Mostra as chaves, esconde os valores: da' pra saber o que o
+            # projeto espera sem despejar credencial no prompt.
+            return (f"[arquivo de segredo: valores mascarados]\n{redact(text)}")
+        return redact(text)
     return text
 
 
@@ -83,6 +90,7 @@ def grep(pattern: str, path: str = ".", glob: str = "*") -> str:
     except re.error as exc:
         return f"ERRO regex: {exc}"
     root = Path(path).expanduser()
+    mask = masking_enabled()
     hits: list[str] = []
     for dirpath, dirs, files in os.walk(root):
         dirs[:] = [d for d in dirs if d not in SKIP_DIRS]
@@ -90,11 +98,14 @@ def grep(pattern: str, path: str = ".", glob: str = "*") -> str:
             if not fnmatch.fnmatch(fname, glob):
                 continue
             fp = Path(dirpath, fname)
+            if mask and is_secret_file(fp):
+                continue  # grep em .env vazaria o valor na linha do match
             try:
                 for i, line in enumerate(fp.read_text(encoding="utf-8",
                                                        errors="ignore").splitlines(), 1):
                     if rx.search(line):
-                        hits.append(f"{fp}:{i}: {line.strip()[:200]}")
+                        snip = line.strip()[:200]
+                        hits.append(f"{fp}:{i}: {redact(snip) if mask else snip}")
                         if len(hits) >= 200:
                             return "\n".join(hits) + "\n... [limite 200]"
             except Exception:

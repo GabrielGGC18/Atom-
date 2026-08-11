@@ -135,8 +135,12 @@ class ClaudeCliEngine(Engine):
             cmd += ["--resume", self._sid]
         else:
             cmd += ["--session-id", str(uuid.uuid4())]
-            if system:
-                cmd += ["--system-prompt", system]
+        # --system-prompt NAO sobrevive ao --resume: sem repetir a cada chamada,
+        # o CLI restaura o system dele e o modelo volta a ser o Claude Code --
+        # passa a responder "Tool call: Read" em vez do bloco atom-tool, e o
+        # ATOM le' isso como resposta final. Tem que ir em toda chamada.
+        if system:
+            cmd += ["--system-prompt", system]
         if self.model:
             cmd += ["--model", self.model]
 

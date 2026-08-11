@@ -13,6 +13,7 @@ from typing import Callable
 
 from atom.agents.persona import build_context_block, build_system_prompt, project_index
 from atom.core.config import Config
+from atom.core.guard import masking_enabled, redact
 from atom.core.registry import enabled_tools
 from atom.core.types import Message, ToolCall, ToolResult
 from atom.engine import Engine, EngineError, build as build_engine
@@ -80,11 +81,17 @@ class Turn:
 class AtomAgent:
     def __init__(self, cfg: Config | None = None, engine: Engine | None = None,
                  session_id: str | None = None,
-                 on_event: Callable[[str, str], None] | None = None) -> None:
+                 on_event: Callable[[str, str], None] | None = None,
+                 on_confirm: Callable[[ToolCall], bool] | None = None) -> None:
         self.cfg = cfg or Config.load()
         self.engine = engine or build_engine(self.cfg)
         self.session_id = session_id or uuid.uuid4().hex[:12]
         self.on_event = on_event or (lambda kind, payload: None)
+        # Sem confirmador registrado a tool roda direto: `atom ask` e o daemon
+        # nao tem ninguem no teclado para responder.
+        self.on_confirm = on_confirm
+        self.confirm_dangerous = bool(self.cfg.get("tools.confirm_dangerous", True))
+        self.mask = masking_enabled(self.cfg)
         self.tools = enabled_tools(self.cfg.get("tools.enabled"))
         self.max_steps = int(self.cfg.get("agent.max_steps", 12))
         self.retries = int(self.cfg.get("agent.retries", 2))
@@ -143,13 +150,21 @@ class AtomAgent:
             known = ", ".join(sorted(self.tools)[:20])
             return ToolResult(call.tool, False, "",
                               f"tool '{call.tool}' nao existe ou esta desativada. Disponiveis: {known}")
+        if self.confirm_dangerous and self.on_confirm and tool.risky(call.args):
+            if not self.on_confirm(call):
+                return ToolResult(call.tool, False, "",
+                                  "recusado pelo Mestre. Nao repita esta chamada; "
+                                  "proponha outro caminho ou pergunte.")
         try:
             out = tool.handler(**call.args)
         except TypeError as exc:
             return ToolResult(call.tool, False, "", f"args invalidos: {exc}")
         except Exception as exc:  # noqa: BLE001
             return ToolResult(call.tool, False, "", f"{type(exc).__name__}: {exc}")
-        return ToolResult(call.tool, True, str(out))
+        text = str(out)
+        # Ultima barreira: pega segredo que veio por shell (`cat .env`, `env`),
+        # http_get ou qualquer tool que nao conheca a politica.
+        return ToolResult(call.tool, True, redact(text) if self.mask else text)
 
     def run_tools(self, calls: list[ToolCall]) -> list[ToolResult]:
         if len(calls) == 1:
@@ -195,7 +210,7 @@ class AtomAgent:
                 reply = self._complete(messages)
             except EngineError as exc:
                 turn.answer = f"ERRO de engine: {exc}"
-                self._finish(user_input, turn, before)
+                self._finish(user_input, turn, before, first)
                 return turn
 
             calls = parse_tool_calls(reply)
@@ -224,10 +239,11 @@ class AtomAgent:
             except EngineError as exc:
                 turn.answer = f"(limite de {self.max_steps} passos atingido; engine falhou: {exc})"
 
-        self._finish(user_input, turn, before)
+        self._finish(user_input, turn, before, first)
         return turn
 
-    def _finish(self, user_input: str, turn: Turn, before: Usage) -> None:
+    def _finish(self, user_input: str, turn: Turn, before: Usage,
+                sent: str | None = None) -> None:
         now = self.engine.usage
         turn.usage = Usage(
             input_tokens=now.input_tokens - before.input_tokens,
@@ -236,7 +252,12 @@ class AtomAgent:
             cache_write=now.cache_write - before.cache_write,
             cost_usd=round(now.cost_usd - before.cost_usd, 6),
         )
-        self.history.append(Message("user", user_input))
+        # Engine com sessao propria compara o historico com o que ja' enviou.
+        # Guardar o input cru aqui (e nao o texto com o bloco de contexto que
+        # foi realmente enviado) fazia a pergunta antiga nao casar e ser
+        # reenviada em todo turno seguinte.
+        self.history.append(Message("user", sent if (sent and self.engine.stateful)
+                                    else user_input))
         self.history.append(Message("assistant", turn.answer))
         self.history = self.history[-20:]
         self.store.log_turn(self.session_id, "assistant", turn.answer)

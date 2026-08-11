@@ -42,7 +42,7 @@ app.add_typer(task_app, name="task")
 app.add_typer(cfg_app, name="config")
 
 
-def _agent(verbose: bool = True) -> AtomAgent:
+def _agent(verbose: bool = True, interactive: bool = False) -> AtomAgent:
     cfg = Config.load()
 
     def on_event(kind: str, payload: str) -> None:
@@ -57,7 +57,25 @@ def _agent(verbose: bool = True) -> AtomAgent:
         elif kind in ("retry", "trim"):
             console.print(f"[dim yellow]{payload}[/]")
 
-    return AtomAgent(cfg=cfg, on_event=on_event)
+    return AtomAgent(cfg=cfg, on_event=on_event,
+                     on_confirm=_confirm if interactive else None)
+
+
+def _confirm(call) -> bool:
+    """Confirmacao para tool que altera o sistema.
+
+    So' no chat: em `atom ask` e no daemon nao ha' ninguem para responder, e
+    bloquear ali viraria travamento silencioso.
+    """
+    import json as _json
+    args = _json.dumps(call.args, ensure_ascii=False)
+    console.print(f"\n[bold yellow]ATOM quer executar[/] [bold]{call.tool}[/]")
+    console.print(f"[dim]{args[:600]}[/]")
+    try:
+        resp = console.input("[bold]permitir? [s/N][/] ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        return False
+    return resp in ("s", "sim", "y", "yes")
 
 
 def _run(agent: AtomAgent, text: str):
@@ -109,7 +127,7 @@ def ask(pergunta: list[str] = typer.Argument(..., help="Pergunta ou ordem"),
 @app.command()
 def chat() -> None:
     """Sessao interativa com o ATOM."""
-    agent = _agent()
+    agent = _agent(interactive=True)
     banner.show(console, agent.engine.describe(), len(agent.tools), len(load_skills()))
     console.print("[dim]comandos: /clear /cost /model /tools /skills /mem /help /sair[/]\n")
     while True:
