@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# venv
+.venv/
+venv/
+env/
+
+# dados locais do ATOM
+.atom/
+*.db
+*.sqlite3
+
+# segredos
+.env
+.env.*
+!.env.example
+
+# editores / SO
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
