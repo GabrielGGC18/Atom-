@@ -33,10 +33,10 @@ atom doctor               # diagnóstico: engines, tools, skills, paths
 atom tools                # lista ferramentas
 atom skill list           # skills carregadas do vault
 atom skill show backend_django_drf
-atom skill route "erro no docker do SEI"   # mostra roteamento
+atom skill route "erro no build do docker"  # mostra roteamento
 atom mem add stack "Django + React + Render"
 atom mem list
-atom task add "revisar PR do portal" -p sei
+atom task add "revisar PR do portal" -p web
 atom task list
 atom config set engine.provider ollama
 
@@ -83,10 +83,23 @@ são **bloqueados** salvo `ATOM_ALLOW_DANGEROUS=1`.
 Lidas direto do vault Obsidian (`~/ATom-agent`, override por `ATOM_VAULT`):
 
 - `Agents/Skills/*.md` — GSM, Django/DRF, React, deploy Render, API
-- `Agents/SEI/Skills/*/SKILL.md` — portal-sei, docker, PHP legado, CSS
+- `Agents/<Dominio>/Skills/*/SKILL.md` — skills agrupadas por dominio
 - `Agents/Java/Skills/*.md` — POO, mentor
 
 Roteamento por score de triggers/descrição. Skill escolhida entra no system prompt.
+Só o topo dela (2500 chars) vai no prompt; o resto sai por `skill_read`.
+
+Para esconder skills do `skill list` e do roteamento, use o config local
+(nomes de projeto privado não vão para o repo):
+
+```yaml
+vault:
+  hidden_skills: [nome-da-skill, outra-skill]
+  domains: [java, infra]     # pastas do vault que viram dominio
+```
+
+Alternativa por arquivo: `hidden: true` no frontmatter da skill.
+`ATOM_SHOW_HIDDEN=1` mostra tudo de novo.
 
 ## Config
 

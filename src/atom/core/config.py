@@ -44,9 +44,13 @@ DEFAULTS: dict[str, Any] = {
     },
     "vault": {
         "path": "",                  # vazio = ~/ATom-agent
-        "skills_globs": ["Agents/Skills/**/*.md", "SEI/Skills/**/*.md",
-                          "Java/Skills/**/*.md", "*/Skills/**/*.md"],
+        "skills_globs": ["Agents/Skills/**/*.md", "*/Skills/**/*.md"],
         "agents_globs": ["Agents/*.md", "*/Agents/*.md"],
+        # Pastas do vault que viram "dominio" da skill (ex: java, infra).
+        "domains": [],
+        # Skills/agents a esconder de `skill list` e do roteamento.
+        # Fica no config local; nao versione nome de projeto privado.
+        "hidden_skills": [],
     },
     "memory": {
         "enabled": True,

@@ -132,8 +132,8 @@ def test_route_score_ignora_palavra_generica():
 
 def test_route_score_casa_trigger_real():
     from atom.skills.loader import score_skill
-    s = _skill("docker-specialist", "Containers e compose", ["docker", "compose"], "sei")
-    assert score_skill(s, "erro no docker do SEI") >= 3
+    s = _skill("docker-specialist", "Containers e compose", ["docker", "compose"], "infra")
+    assert score_skill(s, "erro no docker do build") >= 3
 
 
 # ---------------- guard ----------------
@@ -269,7 +269,7 @@ def test_serve_respects_passed_config():
 def test_digest_text_renders():
     from atom.routines.digest import Digest, RepoState, to_text
     d = Digest(repos=[RepoState(path=Path("/x/repo"), branch="main", dirty=3)],
-               tasks=[{"id": 1, "title": "revisar PR", "project": "sei"}])
+               tasks=[{"id": 1, "title": "revisar PR", "project": "web"}])
     txt = to_text(d)
     assert "repo" in txt and "3 alterado" in txt and "revisar PR" in txt
 
@@ -289,3 +289,34 @@ def test_project_index_lists_full_paths():
 def test_project_index_empty_when_no_roots():
     from atom.agents.persona import project_index
     assert project_index([Path("/nao/existe")]) == ""
+
+
+def test_no_hardcoded_hidden_names_in_source():
+    """Repo e' publico: nome de projeto privado fica no config local."""
+    from atom.skills import loader
+    assert loader.DEFAULT_HIDDEN == frozenset()
+    src = Path(loader.__file__).read_text(encoding="utf-8")
+    for leak in ("portal-sei", "php-legado", "senior-php"):
+        assert leak not in src.lower(), f"nome privado vazou em loader.py: {leak}"
+
+
+def test_hidden_skills_from_config(tmp_path):
+    from atom.skills.loader import _load_all
+    vault = tmp_path / "v" / "Agents" / "Skills"
+    vault.mkdir(parents=True)
+    (vault / "publica.md").write_text("# Publica\n\n## Quando usar\nsempre\n")
+    (vault / "privada.md").write_text("# Privada\n\n## Quando usar\nnunca\n")
+    root = str(tmp_path / "v")
+    visiveis = {s.name for s in _load_all(root, False, frozenset({"privada"}), ())}
+    assert visiveis == {"publica"}
+    todas = {s.name for s in _load_all(root, True, frozenset({"privada"}), ())}
+    assert todas == {"publica", "privada"}
+
+
+def test_domain_comes_from_config(tmp_path):
+    from atom.skills.loader import _load_all
+    d = tmp_path / "v" / "Agents" / "infra" / "Skills"
+    d.mkdir(parents=True)
+    (d / "s.md").write_text("# S\n\n## Quando usar\nx\n")
+    assert _load_all(str(tmp_path / "v"), False, frozenset(), ("infra",))[0].domain == "infra"
+    assert _load_all(str(tmp_path / "v"), False, frozenset(), ())[0].domain == "geral"

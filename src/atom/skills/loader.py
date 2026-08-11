@@ -2,7 +2,7 @@
 
 Suporta dois formatos:
   - arquivo unico: Agents/Skills/backend_django_drf.md
-  - pasta com SKILL.md: Agents/SEI/Skills/docker-specialist/SKILL.md
+  - pasta com SKILL.md: Agents/<Dominio>/Skills/<nome>/SKILL.md
 Frontmatter YAML opcional (name/description/triggers).
 """
 
@@ -22,17 +22,10 @@ SKIP = {".git", ".obsidian", ".trash", "node_modules", "refs"}
 SKIP_FILES = {"readme.md", "index.md", "tasks.md", "changelog.md"}
 
 # Skills/agents ocultos: nao aparecem em `skill list` nem no roteamento.
-# Nomes (lowercase) resolvidos apos o frontmatter. Alternativa por arquivo:
+# A lista vive em `vault.hidden_skills` no config local, nao aqui -- nomes de
+# projeto do Mestre nao entram em repo publico. Por arquivo, vale tambem
 # `hidden: true` no frontmatter. Override em runtime: ATOM_SHOW_HIDDEN=1.
-HIDDEN = {
-    "portal-sei-django-drf",
-    "portal-sei-mentor",
-    "portal-sei-noticias",
-    "portal-sei-settings-env",
-    "portal-sei-templates-css",
-    "memory-portal-sei",
-    "senior-php-legado",
-}
+DEFAULT_HIDDEN: frozenset[str] = frozenset()
 FM_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n", re.S)
 
 
@@ -58,9 +51,9 @@ def _derive_description(body: str) -> str:
     return "(sem descricao)"
 
 
-def _domain_for(rel: Path) -> str:
+def _domain_for(rel: Path, domains: tuple[str, ...] = ()) -> str:
     parts = [p.lower() for p in rel.parts]
-    for key in ("sei", "java", "gsm"):
+    for key in domains:
         if key in parts:
             return key
     return "geral"
@@ -84,13 +77,19 @@ def _iter_md(root: Path):
 
 
 def load_all(vault: str = "") -> tuple[Skill, ...]:
+    from atom.core.config import Config
+    cfg = Config.load()
+    hidden = frozenset(str(h).lower() for h in (cfg.get("vault.hidden_skills") or []))
+    domains = tuple(str(d).lower() for d in (cfg.get("vault.domains") or []))
     # show_hidden entra na chave do cache: era lido dentro da funcao cacheada,
     # entao mudar a env no mesmo processo nao surtia efeito.
-    return _load_all(vault, os.environ.get("ATOM_SHOW_HIDDEN", "") not in ("", "0"))
+    return _load_all(vault, os.environ.get("ATOM_SHOW_HIDDEN", "") not in ("", "0"),
+                     hidden or DEFAULT_HIDDEN, domains)
 
 
-@lru_cache(maxsize=4)
-def _load_all(vault: str, show_hidden: bool) -> tuple[Skill, ...]:
+@lru_cache(maxsize=8)
+def _load_all(vault: str, show_hidden: bool, hidden: frozenset[str],
+              domains: tuple[str, ...]) -> tuple[Skill, ...]:
     root = Path(vault) if vault else paths.default_vault()
     if not root.exists():
         return ()
@@ -102,7 +101,7 @@ def _load_all(vault: str, show_hidden: bool) -> tuple[Skill, ...]:
         if kind == "doc":
             continue
         # assets/references dentro de uma pasta oculta tambem somem
-        if not show_hidden and any(p.lower() in HIDDEN for p in rel.parts):
+        if not show_hidden and any(p.lower() in hidden for p in rel.parts):
             continue
         try:
             text = md.read_text(encoding="utf-8", errors="replace")
@@ -114,7 +113,7 @@ def _load_all(vault: str, show_hidden: bool) -> tuple[Skill, ...]:
         else:
             name = fm.get("name") or md.stem
         name = str(name).strip()
-        if not show_hidden and (name.lower() in HIDDEN or fm.get("hidden") is True):
+        if not show_hidden and (name.lower() in hidden or fm.get("hidden") is True):
             continue
         if name.lower() in seen:
             continue
@@ -125,7 +124,8 @@ def _load_all(vault: str, show_hidden: bool) -> tuple[Skill, ...]:
         out.append(Skill(
             name=name,
             path=str(md),
-            domain=_domain_for(rel) if kind == "skill" else f"{_domain_for(rel)}/agent",
+            domain=(_domain_for(rel, domains) if kind == "skill"
+                    else f"{_domain_for(rel, domains)}/agent"),
             description=str(fm.get("description") or _derive_description(body)),
             triggers=[str(t).lower() for t in triggers] + _auto_triggers(name),
             body=body.strip(),
