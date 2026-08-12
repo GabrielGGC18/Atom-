@@ -76,8 +76,7 @@ def test_config_get_set():
 
 
 def test_store_roundtrip():
-    with tempfile.TemporaryDirectory() as d:
-        st = Store(Path(d) / "t.db")
+    with tempfile.TemporaryDirectory() as d, Store(Path(d) / "t.db") as st:
         st.remember("stack", "django")
         st.remember("stack", "django+react")   # upsert
         rows = st.recall("stack")
@@ -91,8 +90,7 @@ def test_store_roundtrip():
 
 
 def test_store_sessions():
-    with tempfile.TemporaryDirectory() as d:
-        st = Store(Path(d) / "t.db")
+    with tempfile.TemporaryDirectory() as d, Store(Path(d) / "t.db") as st:
         st.log_turn("s1", "user", "oi")
         st.log_turn("s1", "assistant", "ATOM ativo")
         hist = st.history("s1")
@@ -212,12 +210,24 @@ def test_json_in_prose_is_not_executed():
 # ---------------- memoria FTS ----------------
 
 def test_recall_ranks_and_filters():
-    with tempfile.TemporaryDirectory() as d:
-        s = Store(Path(d) / "m.db")
+    with tempfile.TemporaryDirectory() as d, Store(Path(d) / "m.db") as s:
         s.remember("stack", "Django DRF e React no monorepo")
         s.remember("vps", "Hostinger hospeda o Midia63")
         assert [r["key"] for r in s.recall("qual a stack do monorepo?")] == ["stack"]
         assert s.recall("assunto totalmente diverso zzz") == []
+
+
+def test_store_close_libera_arquivo():
+    """close() solta o .db. Sem isso o Windows nao apaga o diretorio temp."""
+    with tempfile.TemporaryDirectory() as d:
+        db = Path(d) / "c.db"
+        s = Store(db)
+        s.remember("k", "v")
+        s.close()
+        assert s._cx is None
+        s.close()          # idempotente
+        db.unlink()        # WinError 32 aqui se a conexao vazasse
+        assert not db.exists()
 
 
 # ---------------- engine delta ----------------

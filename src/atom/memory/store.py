@@ -110,6 +110,37 @@ class Store:
             self._cx.rollback()
             raise
 
+    def close(self) -> None:
+        """Fecha a conexao. Idempotente.
+
+        Sem isto o arquivo fica aberto ate' o GC: no Windows o SO nao deixa
+        apagar/mover .db (nem os -wal/-shm), e teste com diretorio temporario
+        quebra com WinError 32.
+        """
+        if self._cx is None:
+            return
+        try:
+            self._cx.execute("PRAGMA optimize")
+            self._cx.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        except sqlite3.DatabaseError:
+            pass
+        try:
+            self._cx.close()
+        finally:
+            self._cx = None
+
+    def __enter__(self) -> "Store":
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        self.close()
+
+    def __del__(self) -> None:
+        try:
+            self.close()
+        except Exception:
+            pass
+
     def _init(self) -> None:
         with self.conn() as cx:
             cx.executescript(SCHEMA)
