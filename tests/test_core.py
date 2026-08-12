@@ -212,7 +212,7 @@ def test_json_in_prose_is_not_executed():
 def test_recall_ranks_and_filters():
     with tempfile.TemporaryDirectory() as d, Store(Path(d) / "m.db") as s:
         s.remember("stack", "Django DRF e React no monorepo")
-        s.remember("vps", "Hostinger hospeda o Midia63")
+        s.remember("vps", "Hostinger hospeda o site institucional")
         assert [r["key"] for r in s.recall("qual a stack do monorepo?")] == ["stack"]
         assert s.recall("assunto totalmente diverso zzz") == []
 
@@ -322,13 +322,31 @@ def test_project_index_empty_when_no_roots():
     assert project_index([Path("/nao/existe")]) == ""
 
 
+# Montados por pedaco de proposito: escrever o nome inteiro aqui faria o
+# proprio teste virar o vazamento que ele procura.
+PRIVADOS = tuple("".join(p) for p in (
+    ("portal", "-sei"), ("php", "-legado"), ("senior", "-php"),
+    ("midia", "63"), ("midia", "financas"), ("hermes", "-agent"),
+))
+
+
 def test_no_hardcoded_hidden_names_in_source():
-    """Repo e' publico: nome de projeto privado fica no config local."""
+    """Repo e' publico: nome de projeto privado fica no config local.
+
+    Varre o repo inteiro, nao so' loader.py -- a versao anterior olhava um
+    arquivo so' e deixou um nome de projeto passar numa fixture de teste.
+    """
     from atom.skills import loader
     assert loader.DEFAULT_HIDDEN == frozenset()
-    src = Path(loader.__file__).read_text(encoding="utf-8")
-    for leak in ("portal-sei", "php-legado", "senior-php"):
-        assert leak not in src.lower(), f"nome privado vazou em loader.py: {leak}"
+
+    raiz = Path(__file__).resolve().parent.parent
+    alvos = [p for pat in ("src/**/*.py", "tests/**/*.py", "*.md", "*.toml")
+             for p in raiz.glob(pat)]
+    assert len(alvos) > 10, "glob nao achou os fontes; teste seria vacuo"
+    for arq in alvos:
+        txt = arq.read_text(encoding="utf-8", errors="replace").lower()
+        for leak in PRIVADOS:
+            assert leak not in txt, f"nome privado vazou em {arq.relative_to(raiz)}: {leak}"
 
 
 def test_hidden_skills_from_config(tmp_path):
